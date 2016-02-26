@@ -5,23 +5,41 @@
 //#include <SD.h>
 #include <Servo.h>
 #include <MsTimer2.h>
+#define M_PI_4 0.78539816339744830962
 
-float dt = 0.1; // Sample Period
-float GYROSCOPE_SENSITIVITY = 65.536;
-float ACCELEROMETER_SENSITIVITY = 8192.0;
+float dt = 0.02; // Sample Period plus 4ms to run the code
+float GYROSCOPE_SENSITIVITY = 131;
+float ACCELEROMETER_SENSITIVITY = 16384.0;
+float pitchAccel = 0, rollAccel = 0, pitchGyro = 0, rollGyro = 0, pitchValue = 0, rollValue = 0;
 bool INITTING = true;
 
 Servo servo1, servo2;  // create servo object to control a servo
 //File myFile;
 int servoSpeedFactor = 5;
 float angleX = 0, angleY = 0, angleZ = 0;
-const int BUFFERSIZE = 10;
+float velocityX = 0, velocityY = 0, velocityZ = 0;
+float resultX = 0, resultY = 0, resultZ = 0;
+const int BUFFERSIZE = 3;
 float bX[BUFFERSIZE], bY[BUFFERSIZE], bZ[BUFFERSIZE];
+float gX[BUFFERSIZE], gY[BUFFERSIZE], gZ[BUFFERSIZE];
+int giX = 0, giY = 0, giZ = 0;
+int aiX = 0, aiY = 0, aiZ = 0;
+float aX[BUFFERSIZE], aY[BUFFERSIZE], aZ[BUFFERSIZE];
 int biX = 0, biY = 0, biZ = 0;
+int acRaw;
+
+float giroVar = 0.1;
+float deltaGiroVar = 0.1;
+float accelVar = 5;
+float Pxx = 0.1; // angle variance
+float Pvv = 0.1; // angle change rate variance
+float Pxv = 0.1; // angle and angle change rate covariance
+float kx, kv;
 
 const int MPU_addr=0x68;  // I2C address of the MPU-6050
-int16_t AcX,AcY,AcZ,Tmp,GyX,GyY,GyZ;
-int16_t offset_AcX,offset_AcY,offset_AcZ,offset_GyX,offset_GyY,offset_GyZ;
+int16_t AcX,AcY,AcZ,GyX,GyY,GyZ;
+float AcXf,AcYf,AcZf,GyXf,GyYf,GyZf;
+float offset_AcX,offset_AcY,offset_AcZ,offset_GyX,offset_GyY,offset_GyZ;
 int initCount = 0;
 
 void SetRedLed(bool state) {
@@ -31,6 +49,7 @@ void SetRedLed(bool state) {
   } else {
     Serial.println("R LED off");
     digitalWrite(8,  LOW);
+    
   }
 }
 
@@ -90,27 +109,50 @@ void setup(){
   
   Serial.println("Init gyro...");
   InitialiseGyro();
-  
-  /*Serial.println("Init SD card...");
-  if (!SD.begin(4)) {
-    Serial.println("Init SD failed! Bailing.");
-    return;
-  }*/
 
-  /*Serial.println("Init file...");
-  myFile = SD.open("Log.txt", FILE_WRITE);
-  myFile.println("Starting.");
-  myFile.close();*/
-
+  /*Wire.beginTransmission(MPU_addr);
+  Wire.write(0x1C);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_addr,1,true);
+  int16_t w = Wire.read();
+  Serial.print("Accel config: ");Serial.println(w);
+  return;*/
   Serial.println("Init timer...");
-  MsTimer2::set(100, TakeValues);
+
+ // attachInterrupt(digitalPinToInterrupt(2), TakeValues, CHANGE);
+  MsTimer2::set(17, TakeValues);
   MsTimer2::start();
 
   Serial.println("Init done.");
 }
 
+float MoveAverage(float* average, float value, int &pos) {
+  average[pos++] = value;
+  if (pos == BUFFERSIZE) {
+    pos = 0;
+  }
+  float result = 0;
+  int divisor = 0;
+  for (int i = 0; i < BUFFERSIZE; i++) {
+    result += average[i];
+    if (average[i] != 0) {
+      divisor++;
+    }
+  }
+
+  if (divisor != 0)
+    return result / divisor;
+  else
+    return result;
+}
+
+int mils = 0, prevMils = 0;
+
 void TakeValues() {
   sei();
+  if (prevMils != 0)
+    mils = millis() - prevMils;
+  
   Wire.beginTransmission(MPU_addr);
   Wire.write(0x3B);  // starting with register 0x3B (ACCEL_XOUT_H)
   Wire.endTransmission(false);
@@ -118,64 +160,74 @@ void TakeValues() {
   AcX=Wire.read()<<8|Wire.read();  // 0x3B (ACCEL_XOUT_H) & 0x3C (ACCEL_XOUT_L)     
   AcY=Wire.read()<<8|Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
   AcZ=Wire.read()<<8|Wire.read();  // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
+  Wire.read();Wire.read();
   GyX=Wire.read()<<8|Wire.read();  // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
   GyY=Wire.read()<<8|Wire.read();  // 0x45 (GYRO_YOUT_H) & 0x46 (GYRO_YOUT_L)
   GyZ=Wire.read()<<8|Wire.read();  // 0x47 (GYRO_ZOUT_H) & 0x48 (GYRO_ZOUT_L)  
-  GyX /= GYROSCOPE_SENSITIVITY;
-  GyY /= GYROSCOPE_SENSITIVITY;
-  GyZ /= GYROSCOPE_SENSITIVITY;
-  AcX /= ACCELEROMETER_SENSITIVITY;
-  AcY /= ACCELEROMETER_SENSITIVITY;
-  AcZ /= ACCELEROMETER_SENSITIVITY;
 
+  acRaw = AcX;
+  
+  GyXf = (float)GyX / GYROSCOPE_SENSITIVITY;
+  GyYf = (float)GyY / GYROSCOPE_SENSITIVITY;
+  GyZf = (float)GyZ / GYROSCOPE_SENSITIVITY;
+  AcXf = (float)AcX / ACCELEROMETER_SENSITIVITY;
+  AcYf = (float)AcY / ACCELEROMETER_SENSITIVITY;
+  AcZf = (float)AcZ / ACCELEROMETER_SENSITIVITY;
+  
+  /*AcXf = MoveAverage(aX, AcXf, aiX);
+  AcYf = MoveAverage(aY, AcYf, aiY);
+  AcZf = MoveAverage(aZ, AcZf, aiZ);
+  GyXf = MoveAverage(gX, GyXf, giX);
+  GyYf = MoveAverage(gY, GyYf, giY);
+  GyZf = MoveAverage(gZ, GyZf, giZ);*/
+  float adjustment = 0;
   if (INITTING) {
-    offset_GyX += (GyX - 90);
-    offset_GyY += (GyY - 90);
-    offset_GyZ += (GyZ - 90);  
-    offset_AcX += (AcX - 90);
-    offset_AcY += (AcY - 90);
-    offset_AcZ += (AcZ - 90);
+    offset_GyX += (GyXf - adjustment);
+    offset_GyY += (GyYf - adjustment);
+    offset_GyZ += (GyZf - adjustment);  
+    offset_AcX += (AcXf - adjustment);
+    offset_AcY += (AcYf - adjustment);
+    offset_AcZ += (AcZf - adjustment - 1); //ignore gravity
     initCount++;
     if (initCount > 100) {
       SetRedLed(false);
       INITTING = false;
+      offset_GyX /= (float)initCount;
+      offset_GyY /= (float)initCount;
+      offset_GyZ /= (float)initCount;
+      offset_AcX /= (float)initCount;
+      offset_AcY /= (float)initCount;    
+      offset_AcZ /= (float)initCount;   
     }
   } else {
-    if (initCount > 0) {
-      initCount = 0;
-      offset_GyX /= initCount;
-      offset_GyY /= initCount;
-      offset_GyZ /= initCount;
-      offset_AcX /= initCount;
-      offset_AcY /= initCount;    
-      offset_AcZ /= initCount;     
+    float accelAdjust = 0.06;
+    float gyroAdjust = 1 - accelAdjust;
 
-      offset_GyX = 0;
-      offset_GyY = 0;
-      offset_GyZ = 0;
-      offset_AcX = 0;
-      offset_AcY = 0;    
-      offset_AcZ = 0;     
-    }
+    pitchAccel = atan2((AcYf - offset_AcY), (AcZf - offset_AcZ)) * 360.0 / (2*PI);
+    pitchGyro = pitchGyro + ((GyXf - offset_GyX)) * dt;
+    pitchValue = pitchValue + pitchGyro;
     
-    angleX = (0.9 * angleX) + (0.1 * (0.8 * (angleX + ((GyX + offset_GyX) * dt))) + (0.2 * (AcX + offset_AcX)));
-    angleY = (0.9 * angleY) + (0.1 * (0.8 * (angleY + ((GyY + offset_GyY) * dt))) + (0.2 * (AcY + offset_AcY)));
-    angleZ = (0.9 * angleZ) + (0.1 * (0.8 * (angleZ + ((GyZ + offset_GyZ) * dt))) + (0.2 * (AcZ + offset_AcZ)));
+    rollAccel = atan2((AcXf - offset_AcX), (AcZf - offset_AcZ)) * 360.0 / (2*PI);
+    rollGyro = rollGyro - ((GyYf - offset_GyY)) * dt; 
+    rollValue = rollValue - rollGyro;
     
-    bX[biX] = angleX;
-    if (++biX == BUFFERSIZE) {
-      biX = 0;
-    }
+    Pxx += dt * (2 * Pxv + dt * Pvv);
+    Pxv += dt * Pvv;
+    Pxx += dt * giroVar;
+    Pvv += dt * deltaGiroVar;
+    kx = Pxx * (1 / (Pxx + accelVar));
+    kv = Pxv * (1 / (Pxx + accelVar));
     
-    bY[biY] = angleY;
-    if (++biY == BUFFERSIZE) {
-      biY = 0;
-    }
+    pitchValue += (pitchAccel - pitchValue) * kx;
+    rollValue += (rollAccel - rollValue) * kx;
     
-    bZ[biZ] = angleZ;
-    if (++biZ == BUFFERSIZE) {
-      biZ = 0;
-    }
+    Pxx *= (1 - kx);
+    Pxv *= (1 - kx);
+    Pvv -= kv * Pxv;
+
+    prevMils = millis();
+    /*Calculate(angleX, GyXf, offset_GyX, velocityX, AcXf, offset_AcX, AcZf, offset_AcZ, resultX, gyroAdjust, accelAdjust);
+    Calculate(angleY, GyYf, offset_GyY, velocityY, AcYf, offset_AcY, AcZf, offset_AcZ, resultY, gyroAdjust, accelAdjust);*/
   }
 
   /*if (angleX >= 45 && angleX <= 135) {
@@ -191,6 +243,11 @@ void TakeValues() {
   }*/
 }
 
+void Calculate(float &angle, float Gy, float offset_Gy, float &velocity, float AcAxis, float offset_AcAxis, float AcOffAxis, float offset_AcOffAxis, float &result, float gyroAdjust, float accelAdjust) {
+  float angleDelta = angle = (Gy - offset_Gy) * dt;
+  float accelDelta = angle = atan2(((AcAxis - offset_AcAxis)), ((AcOffAxis - offset_AcOffAxis))) * 360.0 / (2*PI); //(Ac - offset_Ac) * dt;
+  result = (gyroAdjust * (result + angleDelta)) + (accelAdjust * accelDelta);
+}
 
 float GetTotal(float values[]) {
   int siz = sizeof(values);
@@ -207,17 +264,14 @@ bool ledState = false;
 void loop(){
   ledState = !ledState;
   SetGreenLed(ledState);
-  int tx, ty, tz;
-  tx = GetTotal(bX);
-  ty = GetTotal(bY);
-  tz = GetTotal(bZ);
-  //myFile = SD.open("Log.txt", FILE_WRITE);
-  Serial.print(" | AnX = "); Serial.println(tx);
-  //myFile.print("AnX = "); myFile.println(tx);
-  Serial.print(" | AnY = "); Serial.println(ty);
-  //myFile.print("AnY = "); myFile.println(ty);
-  Serial.print(" | AnZ = "); Serial.println(tz);
-  //myFile.print("AnZ = "); myFile.println(tz);
-  //myFile.close();
-  delay(1000);
+
+  if (INITTING) {
+    Serial.print(AcZ);
+  } else {
+    Serial.print(pitchValue * 0.03);
+    Serial.print("\t");
+    Serial.print(rollValue * 0.03);
+    Serial.print("\n");
+  }
+  delay(100);
 }
