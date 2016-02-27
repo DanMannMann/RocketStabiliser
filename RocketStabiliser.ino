@@ -12,6 +12,7 @@ float GYROSCOPE_SENSITIVITY = 131;
 float ACCELEROMETER_SENSITIVITY = 16384.0;
 float pitchAccel = 0, rollAccel = 0, pitchGyro = 0, rollGyro = 0, pitchValue = 0, rollValue = 0;
 bool INITTING = true;
+float pv = 0, rv = 0;
 
 Servo servo1, servo2;  // create servo object to control a servo
 //File myFile;
@@ -19,7 +20,7 @@ int servoSpeedFactor = 5;
 float angleX = 0, angleY = 0, angleZ = 0;
 float velocityX = 0, velocityY = 0, velocityZ = 0;
 float resultX = 0, resultY = 0, resultZ = 0;
-const int BUFFERSIZE = 3;
+const int BUFFERSIZE = 5;
 float bX[BUFFERSIZE], bY[BUFFERSIZE], bZ[BUFFERSIZE];
 float gX[BUFFERSIZE], gY[BUFFERSIZE], gZ[BUFFERSIZE];
 int giX = 0, giY = 0, giZ = 0;
@@ -102,6 +103,17 @@ void setup(){
   pinMode(9, OUTPUT);
   SetRedLed(true);
 
+  //Set options on sensor
+  Wire.beginTransmission(MPU_addr);
+  Wire.write(0x1A);
+  Wire.write(0x4);
+  Wire.endTransmission();
+  
+  /*Wire.beginTransmission(MPU_addr);
+  Wire.write(0x1C);
+  Wire.write(0x8);
+  Wire.endTransmission();*/
+  
   Serial.println("Init servo 1...");
   InitialiseServo(3, servo1, 90);
   Serial.println("Init servo 2...");
@@ -174,12 +186,12 @@ void TakeValues() {
   AcYf = (float)AcY / ACCELEROMETER_SENSITIVITY;
   AcZf = (float)AcZ / ACCELEROMETER_SENSITIVITY;
   
-  /*AcXf = MoveAverage(aX, AcXf, aiX);
+  AcXf = MoveAverage(aX, AcXf, aiX);
   AcYf = MoveAverage(aY, AcYf, aiY);
   AcZf = MoveAverage(aZ, AcZf, aiZ);
   GyXf = MoveAverage(gX, GyXf, giX);
   GyYf = MoveAverage(gY, GyYf, giY);
-  GyZf = MoveAverage(gZ, GyZf, giZ);*/
+  GyZf = MoveAverage(gZ, GyZf, giZ);
   float adjustment = 0;
   if (INITTING) {
     offset_GyX += (GyXf - adjustment);
@@ -187,7 +199,7 @@ void TakeValues() {
     offset_GyZ += (GyZf - adjustment);  
     offset_AcX += (AcXf - adjustment);
     offset_AcY += (AcYf - adjustment);
-    offset_AcZ += (AcZf - adjustment - 1); //ignore gravity
+    offset_AcZ += (AcZf - adjustment - 1.0003); //ignore gravity
     initCount++;
     if (initCount > 100) {
       SetRedLed(false);
@@ -208,8 +220,8 @@ void TakeValues() {
     pitchValue = pitchValue + pitchGyro;
     
     rollAccel = atan2((AcXf - offset_AcX), (AcZf - offset_AcZ)) * 360.0 / (2*PI);
-    rollGyro = rollGyro - ((GyYf - offset_GyY)) * dt; 
-    rollValue = rollValue - rollGyro;
+    rollGyro = rollGyro + ((GyYf - offset_GyY)) * dt; 
+    rollValue = rollValue + rollGyro;
     
     Pxx += dt * (2 * Pxv + dt * Pvv);
     Pxv += dt * Pvv;
@@ -225,22 +237,33 @@ void TakeValues() {
     Pxv *= (1 - kx);
     Pvv -= kv * Pxv;
 
+    pv = (-(pitchValue * 0.03));
+    rv = ((rollValue * 0.03));
+    pv *= 1.20;
+    rv *= 1.20;
+    pv += 90.0;
+    rv += 90.0;
+
+    if (pv >= 50 && pv <= 130) {
+      servo1.write(pv);
+    } else if (pv <= 130) {
+      servo1.write(50);
+    } else {
+      servo1.write(130);
+    }
+  
+    if (rv >= 50 && rv <= 130) {
+      servo2.write(rv);
+    } else if (rv <= 130) {
+      servo2.write(50);
+    } else {
+      servo2.write(130);
+    }
+
     prevMils = millis();
     /*Calculate(angleX, GyXf, offset_GyX, velocityX, AcXf, offset_AcX, AcZf, offset_AcZ, resultX, gyroAdjust, accelAdjust);
     Calculate(angleY, GyYf, offset_GyY, velocityY, AcYf, offset_AcY, AcZf, offset_AcZ, resultY, gyroAdjust, accelAdjust);*/
   }
-
-  /*if (angleX >= 45 && angleX <= 135) {
-    servo1.write((angleX + 90.0) % 180);
-  } else {
-    servo1.write(90);
-  }
-
-  if (angleY >= 45 && angleY <= 135) {
-    servo1.write(angleY + 90.0);
-  } else {
-    servo1.write(90);
-  }*/
 }
 
 void Calculate(float &angle, float Gy, float offset_Gy, float &velocity, float AcAxis, float offset_AcAxis, float AcOffAxis, float offset_AcOffAxis, float &result, float gyroAdjust, float accelAdjust) {
@@ -260,18 +283,27 @@ float GetTotal(float values[]) {
 }
 
 bool ledState = false;
+int count = 8;
 
 void loop(){
-  ledState = !ledState;
-  SetGreenLed(ledState);
-
   if (INITTING) {
     Serial.print(AcZ);
-  } else {
-    Serial.print(pitchValue * 0.03);
-    Serial.print("\t");
-    Serial.print(rollValue * 0.03);
-    Serial.print("\n");
+  } else {    
+    count++;
+    if (count == 9) {
+      ledState = !ledState;
+      SetGreenLed(ledState);
+      Serial.print(pitchValue * 0.03);
+      Serial.print("\t");
+      Serial.print(rollValue * 0.03);
+      Serial.print("\n");
+      Serial.print(pv);
+      Serial.print("\t");
+      Serial.print(rv);
+      Serial.print("\n");
+      Serial.print("\n");
+      count = 0;
+    }
   }
   delay(100);
 }
