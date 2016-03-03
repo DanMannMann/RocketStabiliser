@@ -7,7 +7,8 @@
 #include <MsTimer2.h>
 #define M_PI_4 0.78539816339744830962
 
-float dt = 0.02; // Sample Period plus 4ms to run the code
+bool smoothing = true;
+float dt = 0.01; // Sample Period plus 4ms to run the code
 float GYROSCOPE_SENSITIVITY = 131;
 float ACCELEROMETER_SENSITIVITY = 16384.0;
 float pitchAccel = 0, rollAccel = 0, pitchGyro = 0, rollGyro = 0, pitchValue = 0, rollValue = 0;
@@ -20,7 +21,7 @@ int servoSpeedFactor = 5;
 float angleX = 0, angleY = 0, angleZ = 0;
 float velocityX = 0, velocityY = 0, velocityZ = 0;
 float resultX = 0, resultY = 0, resultZ = 0;
-const int BUFFERSIZE = 5;
+const int BUFFERSIZE = 10;
 float bX[BUFFERSIZE], bY[BUFFERSIZE], bZ[BUFFERSIZE];
 float gX[BUFFERSIZE], gY[BUFFERSIZE], gZ[BUFFERSIZE];
 int giX = 0, giY = 0, giZ = 0;
@@ -122,17 +123,10 @@ void setup(){
   Serial.println("Init gyro...");
   InitialiseGyro();
 
-  /*Wire.beginTransmission(MPU_addr);
-  Wire.write(0x1C);
-  Wire.endTransmission(false);
-  Wire.requestFrom(MPU_addr,1,true);
-  int16_t w = Wire.read();
-  Serial.print("Accel config: ");Serial.println(w);
-  return;*/
   Serial.println("Init timer...");
 
  // attachInterrupt(digitalPinToInterrupt(2), TakeValues, CHANGE);
-  MsTimer2::set(17, TakeValues);
+  MsTimer2::set(7, TakeValues);
   MsTimer2::start();
 
   Serial.println("Init done.");
@@ -185,13 +179,15 @@ void TakeValues() {
   AcXf = (float)AcX / ACCELEROMETER_SENSITIVITY;
   AcYf = (float)AcY / ACCELEROMETER_SENSITIVITY;
   AcZf = (float)AcZ / ACCELEROMETER_SENSITIVITY;
-  
-  AcXf = MoveAverage(aX, AcXf, aiX);
-  AcYf = MoveAverage(aY, AcYf, aiY);
-  AcZf = MoveAverage(aZ, AcZf, aiZ);
-  GyXf = MoveAverage(gX, GyXf, giX);
-  GyYf = MoveAverage(gY, GyYf, giY);
-  GyZf = MoveAverage(gZ, GyZf, giZ);
+
+  if (smoothing) {
+    AcXf = MoveAverage(aX, AcXf, aiX);
+    AcYf = MoveAverage(aY, AcYf, aiY);
+    AcZf = MoveAverage(aZ, AcZf, aiZ);
+    GyXf = MoveAverage(gX, GyXf, giX);
+    GyYf = MoveAverage(gY, GyYf, giY);
+    GyZf = MoveAverage(gZ, GyZf, giZ);
+  }
   float adjustment = 0;
   if (INITTING) {
     offset_GyX += (GyXf - adjustment);
@@ -199,7 +195,7 @@ void TakeValues() {
     offset_GyZ += (GyZf - adjustment);  
     offset_AcX += (AcXf - adjustment);
     offset_AcY += (AcYf - adjustment);
-    offset_AcZ += (AcZf - adjustment - 1.0003); //ignore gravity
+    offset_AcZ += (AcZf - adjustment - 1); //ignore gravity - 1.0003
     initCount++;
     if (initCount > 100) {
       SetRedLed(false);
@@ -239,25 +235,57 @@ void TakeValues() {
 
     pv = (-(pitchValue * 0.03));
     rv = ((rollValue * 0.03));
-    pv *= 1.20;
-    rv *= 1.20;
+    pv *= 1.1;
+    rv *= 1.1;
     pv += 90.0;
     rv += 90.0;
 
     if (pv >= 50 && pv <= 130) {
       servo1.write(pv);
     } else if (pv <= 130) {
-      servo1.write(50);
+      if (pv <= 30) {
+        servo1.write(90);
+        servo2.write(90);
+        MsTimer2::stop();
+        prevMils = millis();
+        return;
+      } else {
+        servo1.write(50);
+      }
     } else {
-      servo1.write(130);
+      if (pv >= 150) {
+        servo1.write(90);
+        servo2.write(90);
+        MsTimer2::stop();
+        prevMils = millis();
+        return;
+      } else {
+        servo1.write(130);
+      }
     }
   
     if (rv >= 50 && rv <= 130) {
       servo2.write(rv);
     } else if (rv <= 130) {
-      servo2.write(50);
+      if (rv <= 30) {
+        servo1.write(90);
+        servo2.write(90);
+        MsTimer2::stop();
+        prevMils = millis();
+        return;
+      } else {
+        servo2.write(50);
+      }
     } else {
-      servo2.write(130);
+      if (rv >= 150) {
+        servo1.write(90);
+        servo2.write(90);
+        MsTimer2::stop();
+        prevMils = millis();
+        return;
+      } else {
+        servo2.write(130);
+      }
     }
 
     prevMils = millis();
@@ -289,7 +317,35 @@ void loop(){
   if (INITTING) {
     Serial.print(AcZ);
   } else {    
-    count++;
+    /*Serial.print(AcXf);
+    Serial.print("\t");
+    Serial.print(AcYf);
+    Serial.print("\t");
+    Serial.printl(AcZf);
+    Serial.print("\t");*/
+    Serial.print(millis());
+    Serial.print("\t");
+    Serial.print(AcXf + offset_AcX);
+    Serial.print("\t");
+    Serial.print(AcYf + offset_AcY);
+    Serial.print("\t");
+    Serial.print(AcZf + offset_AcZ);
+    Serial.print("\t");
+
+    Serial.print(GyXf + offset_GyX);
+    Serial.print("\t");
+    Serial.print(GyYf + offset_GyY);
+    Serial.print("\t");
+    Serial.print(GyZf + offset_GyZ);
+    Serial.print("\t");
+
+    Serial.print(pv);
+    Serial.print("\t");
+    Serial.print(rv);
+    Serial.print("\t");
+
+    Serial.print("\n");
+    /*count++;
     if (count == 9) {
       ledState = !ledState;
       SetGreenLed(ledState);
@@ -303,7 +359,7 @@ void loop(){
       Serial.print("\n");
       Serial.print("\n");
       count = 0;
-    }
+    }*/
   }
   delay(100);
 }
