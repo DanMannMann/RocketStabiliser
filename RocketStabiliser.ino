@@ -2,10 +2,14 @@
 
 #include<Wire.h>
 #include <SPI.h>
-//#include <SD.h>
+#include <SdFat.h>
+SdFat SD;
 #include <Servo.h>
 #include <MsTimer2.h>
 #define M_PI_4 0.78539816339744830962
+
+float servo1Adjust = 0;
+float servo2Adjust = -4;
 
 bool smoothing = true;
 float dt = 0.01; // Sample Period plus 4ms to run the code
@@ -16,7 +20,7 @@ bool INITTING = true;
 float pv = 0, rv = 0;
 
 Servo servo1, servo2;  // create servo object to control a servo
-//File myFile;
+File myFile;
 int servoSpeedFactor = 5;
 float angleX = 0, angleY = 0, angleZ = 0;
 float velocityX = 0, velocityY = 0, velocityZ = 0;
@@ -29,6 +33,8 @@ int aiX = 0, aiY = 0, aiZ = 0;
 float aX[BUFFERSIZE], aY[BUFFERSIZE], aZ[BUFFERSIZE];
 int biX = 0, biY = 0, biZ = 0;
 int acRaw;
+int filenumber = 1;
+String filename;
 
 float giroVar = 0.1;
 float deltaGiroVar = 0.1;
@@ -43,6 +49,7 @@ int16_t AcX,AcY,AcZ,GyX,GyY,GyZ;
 float AcXf,AcYf,AcZf,GyXf,GyYf,GyZf;
 float offset_AcX,offset_AcY,offset_AcZ,offset_GyX,offset_GyY,offset_GyZ;
 int initCount = 0;
+bool useSd = true;
 
 void SetRedLed(bool state) {
   if (state) {
@@ -63,6 +70,14 @@ void SetGreenLed(bool state) {
     Serial.println("G LED off");
     digitalWrite(9,  LOW);
   }
+}
+
+void SetServo1(int degree) {
+  servo1.write(90 + (90 - (degree)) + servo1Adjust);
+}
+
+void SetServo2(int degree) {
+  servo2.write(90 + (90 - (degree)) + servo2Adjust);
 }
 
 void InitialiseServo(int pin, Servo target, int initialPosition) {
@@ -116,12 +131,35 @@ void setup(){
   Wire.endTransmission();*/
   
   Serial.println("Init servo 1...");
-  InitialiseServo(3, servo1, 90);
+  InitialiseServo(3, servo1, 90 + servo1Adjust);
   Serial.println("Init servo 2...");
-  InitialiseServo(5, servo2, 90);
+  InitialiseServo(5, servo2, 90 + servo2Adjust);
   
   Serial.println("Init gyro...");
   InitialiseGyro();
+
+  Serial.println("Init SD card...");
+  if (!SD.begin(4)) {
+    Serial.println("NO SD!");
+    useSd = false;
+  } else {
+    filename = String(filenumber) + ".log";
+    while (SD.exists(filename.c_str())) {
+      filename = String(++filenumber) + ".log";
+    }
+    Serial.println("Filename: " + filename);
+  }
+  
+  Serial.println("Init file...");
+  myFile = SD.open(filename.c_str(), FILE_WRITE);
+  myFile.print("time");
+  myFile.print("\t");
+  myFile.print("ptch");
+  myFile.print("\t");
+  myFile.println("roll");
+  myFile.flush();
+  myFile.close();
+  myFile.close();
 
   Serial.println("Init timer...");
 
@@ -153,6 +191,8 @@ float MoveAverage(float* average, float value, int &pos) {
 }
 
 int mils = 0, prevMils = 0;
+float zScaleFactor = 0.3;
+float resultScaleFactor = 0.03;
 
 void TakeValues() {
   sei();
@@ -180,6 +220,9 @@ void TakeValues() {
   AcYf = (float)AcY / ACCELEROMETER_SENSITIVITY;
   AcZf = (float)AcZ / ACCELEROMETER_SENSITIVITY;
 
+  //GyXf = GyXf + (GyZf * zScaleFactor);
+  //GyYf = GyYf + (-GyZf * zScaleFactor);
+
   if (smoothing) {
     AcXf = MoveAverage(aX, AcXf, aiX);
     AcYf = MoveAverage(aY, AcYf, aiY);
@@ -188,6 +231,7 @@ void TakeValues() {
     GyYf = MoveAverage(gY, GyYf, giY);
     GyZf = MoveAverage(gZ, GyZf, giZ);
   }
+  
   float adjustment = 0;
   if (INITTING) {
     offset_GyX += (GyXf - adjustment);
@@ -198,7 +242,9 @@ void TakeValues() {
     offset_AcZ += (AcZf - adjustment - 1); //ignore gravity - 1.0003
     initCount++;
     if (initCount > 100) {
-      SetRedLed(false);
+      if (useSd) {
+        SetRedLed(false);
+      }
       INITTING = false;
       offset_GyX /= (float)initCount;
       offset_GyY /= (float)initCount;
@@ -240,55 +286,55 @@ void TakeValues() {
     pv += 90.0;
     rv += 90.0;
 
-    if (pv >= 50 && pv <= 130) {
-      servo1.write(pv);
-    } else if (pv <= 130) {
-      if (pv <= 30) {
-        servo1.write(90);
-        servo2.write(90);
+    if (pv >= 50 + servo1Adjust && pv <= 130 + servo1Adjust) {
+      SetServo1(pv);
+    } else if (pv <= 130 + servo1Adjust) {
+      if (pv <= 30 + servo1Adjust) {
+        SetServo1(90);
+        SetServo2(90);
         MsTimer2::stop();
         prevMils = millis();
         return;
       } else {
-        servo1.write(50);
+        SetServo1(50);
       }
     } else {
-      if (pv >= 150) {
-        servo1.write(90);
-        servo2.write(90);
+      if (pv >= 150 + servo1Adjust) {
+        SetServo1(90);
+        SetServo2(90);
         MsTimer2::stop();
         prevMils = millis();
         return;
       } else {
-        servo1.write(130);
+        SetServo1(130);
       }
     }
   
-    if (rv >= 50 && rv <= 130) {
-      servo2.write(rv);
-    } else if (rv <= 130) {
-      if (rv <= 30) {
-        servo1.write(90);
-        servo2.write(90);
+    if (rv >= 50 + servo2Adjust && rv <= 130 + servo2Adjust) {
+      SetServo2(rv);
+    } else if (rv <= 130 + servo2Adjust) {
+      if (rv <= 30 + servo2Adjust) {
+        SetServo1(90);
+        SetServo2(90);
         MsTimer2::stop();
         prevMils = millis();
         return;
       } else {
-        servo2.write(50);
+        SetServo2(50);
       }
     } else {
-      if (rv >= 150) {
-        servo1.write(90);
-        servo2.write(90);
+      if (rv >= 150 + servo2Adjust) {
+        SetServo1(90);
+        SetServo2(90);
         MsTimer2::stop();
         prevMils = millis();
         return;
       } else {
-        servo2.write(130);
+        SetServo2(130);
       }
     }
 
-    prevMils = millis();
+    prevMils = millis();    
     /*Calculate(angleX, GyXf, offset_GyX, velocityX, AcXf, offset_AcX, AcZf, offset_AcZ, resultX, gyroAdjust, accelAdjust);
     Calculate(angleY, GyYf, offset_GyY, velocityY, AcYf, offset_AcY, AcZf, offset_AcZ, resultY, gyroAdjust, accelAdjust);*/
   }
@@ -317,13 +363,26 @@ void loop(){
   if (INITTING) {
     Serial.print(AcZ);
   } else {    
-    /*Serial.print(AcXf);
-    Serial.print("\t");
-    Serial.print(AcYf);
-    Serial.print("\t");
-    Serial.printl(AcZf);
-    Serial.print("\t");*/
+    ledState = !ledState;
+    SetGreenLed(ledState);
     Serial.print(millis());
+    Serial.print("\t");
+    Serial.print(pv);
+    Serial.print("\t");
+    Serial.println(rv);
+   
+    
+    if (useSd) {
+      myFile = SD.open(filename.c_str(), FILE_WRITE);      
+      myFile.print(millis());
+      myFile.print("\t");
+      myFile.print(pv);
+      myFile.print("\t");
+      myFile.println(rv);
+      myFile.flush();
+      myFile.close();
+    }
+    /*Serial.print(millis());
     Serial.print("\t");
     Serial.print(AcXf + offset_AcX);
     Serial.print("\t");
@@ -344,22 +403,7 @@ void loop(){
     Serial.print(rv);
     Serial.print("\t");
 
-    Serial.print("\n");
-    /*count++;
-    if (count == 9) {
-      ledState = !ledState;
-      SetGreenLed(ledState);
-      Serial.print(pitchValue * 0.03);
-      Serial.print("\t");
-      Serial.print(rollValue * 0.03);
-      Serial.print("\n");
-      Serial.print(pv);
-      Serial.print("\t");
-      Serial.print(rv);
-      Serial.print("\n");
-      Serial.print("\n");
-      count = 0;
-    }*/
+    Serial.print("\n");*/
   }
   delay(100);
 }
